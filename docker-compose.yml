@@ -3,7 +3,7 @@ services:
     image: postgres:16
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: Com03/008/23
       POSTGRES_DB: watercare
     ports: ["5432:5432"]
     volumes:

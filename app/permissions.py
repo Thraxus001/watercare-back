@@ -4,6 +4,8 @@ import enum
 class Permission(str, enum.Enum):
     """Permission codes an admin can grant to a regular user.
     Admins implicitly have all of them, plus user management."""
+    PLANTS_VIEW = "plants:view"
+    PLANTS_MANAGE = "plants:manage"
     MACHINES_VIEW = "machines:view"
     MACHINES_MANAGE = "machines:manage"
     CHECKLISTS_VIEW = "checklists:view"
@@ -16,6 +18,8 @@ class Permission(str, enum.Enum):
 
 
 PERMISSION_DESCRIPTIONS = {
+    Permission.PLANTS_VIEW: "See plants, locations, and their machines",
+    Permission.PLANTS_MANAGE: "Add, edit and deactivate plants",
     Permission.MACHINES_VIEW: "See machines and their latest checkup status",
     Permission.MACHINES_MANAGE: "Add, edit and deactivate machines",
     Permission.CHECKLISTS_VIEW: "See the checklist defined for each machine type",

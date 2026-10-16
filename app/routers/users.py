@@ -1,11 +1,10 @@
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from ..database import get_db
 from ..deps import require_admin
-from ..models import User, UserPermission, UserRole
+from ..models import User, UserRole
+from ..mongo import get_mongo_db, get_next_id
 from ..permissions import PERMISSION_DESCRIPTIONS
 from ..schemas import PermissionInfo, PermissionsUpdate, UserCreate, UserOut, UserUpdate, user_out
 from ..security import hash_password
@@ -19,57 +18,79 @@ def available_permissions():
 
 
 @router.get("", response_model=list[UserOut])
-def list_users(db: Session = Depends(get_db)):
-    return [user_out(u) for u in db.scalars(select(User).order_by(User.full_name))]
+async def list_users(db: AsyncIOMotorDatabase = Depends(get_mongo_db)):
+    docs = await db["users"].find().sort("full_name", 1).to_list(1000)
+    return [user_out(User(**d)) for d in docs]
 
 
 @router.post("", response_model=UserOut, status_code=201)
-def create_user(payload: UserCreate, db: Session = Depends(get_db)):
+async def create_user(payload: UserCreate, db: AsyncIOMotorDatabase = Depends(get_mongo_db)):
     email = payload.email.lower()
-    if db.scalar(select(User).where(func.lower(User.email) == email)):
+    if await db["users"].find_one({"email": email}):
         raise HTTPException(409, "A user with this email already exists")
-    user = User(
-        email=email,
-        full_name=payload.full_name,
-        hashed_password=hash_password(payload.password),
-        role=payload.role,
-        permissions=[UserPermission(permission=p.value) for p in set(payload.permissions)],
-    )
-    db.add(user)
-    db.commit()
-    return user_out(user)
+
+    new_id = await get_next_id(db, "user_id")
+    user_data = {
+        "id": new_id,
+        "email": email,
+        "full_name": payload.full_name,
+        "hashed_password": hash_password(payload.password),
+        "role": payload.role.value if isinstance(payload.role, UserRole) else payload.role,
+        "is_active": True,
+        "created_at": datetime.now(timezone.utc),
+        "permissions": [p.value for p in set(payload.permissions)],
+    }
+    await db["users"].insert_one(user_data)
+    return user_out(User(**user_data))
 
 
 @router.get("/{user_id}", response_model=UserOut)
-def get_user(user_id: int, db: Session = Depends(get_db)):
-    user = db.get(User, user_id)
-    if not user:
+async def get_user(user_id: int, db: AsyncIOMotorDatabase = Depends(get_mongo_db)):
+    doc = await db["users"].find_one({"id": user_id})
+    if not doc:
         raise HTTPException(404, "User not found")
-    return user_out(user)
+    return user_out(User(**doc))
 
 
 @router.patch("/{user_id}", response_model=UserOut)
-def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
-    user = db.get(User, user_id)
-    if not user:
+async def update_user(
+    user_id: int,
+    payload: UserUpdate,
+    db: AsyncIOMotorDatabase = Depends(get_mongo_db),
+    admin: User = Depends(require_admin),
+):
+    doc = await db["users"].find_one({"id": user_id})
+    if not doc:
         raise HTTPException(404, "User not found")
+
     data = payload.model_dump(exclude_unset=True)
-    if user.id == admin.id and (data.get("is_active") is False or data.get("role") == UserRole.user):
+    if user_id == admin.id and (data.get("is_active") is False or data.get("role") == UserRole.user):
         raise HTTPException(400, "You can't deactivate or demote your own account")
+
     if "password" in data:
-        user.hashed_password = hash_password(data.pop("password"))
-    for k, v in data.items():
-        setattr(user, k, v)
-    db.commit()
-    return user_out(user)
+        data["hashed_password"] = hash_password(data.pop("password"))
+    if "role" in data and isinstance(data["role"], UserRole):
+        data["role"] = data["role"].value
+
+    if data:
+        await db["users"].update_one({"id": user_id}, {"$set": data})
+        doc.update(data)
+
+    return user_out(User(**doc))
 
 
 @router.put("/{user_id}/permissions", response_model=UserOut)
-def set_permissions(user_id: int, payload: PermissionsUpdate, db: Session = Depends(get_db)):
+async def set_permissions(
+    user_id: int,
+    payload: PermissionsUpdate,
+    db: AsyncIOMotorDatabase = Depends(get_mongo_db),
+):
     """Replace the user's granted permissions with exactly this list."""
-    user = db.get(User, user_id)
-    if not user:
+    doc = await db["users"].find_one({"id": user_id})
+    if not doc:
         raise HTTPException(404, "User not found")
-    user.permissions = [UserPermission(permission=p.value) for p in set(payload.permissions)]
-    db.commit()
-    return user_out(user)
+
+    perms = [p.value for p in set(payload.permissions)]
+    await db["users"].update_one({"id": user_id}, {"$set": {"permissions": perms}})
+    doc["permissions"] = perms
+    return user_out(User(**doc))

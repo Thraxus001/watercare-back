@@ -1,15 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from ..database import get_db
 from ..deps import require_any
-from ..models import (
-    CheckItem, InputType, Inspection, InspectionAnswer, InspectionAnswerOption, Machine, MachineNote, User,
-)
+from ..models import CheckCategory, InputType, User
+from ..mongo import get_mongo_db, get_next_id
 from ..permissions import Permission as P
 from ..schemas import AnswerOptionOut, AnswerOut, InspectionCreate, InspectionOut, InspectionSummary
 
@@ -20,35 +17,56 @@ can_create = require_any(P.INSPECTIONS_CREATE)
 can_delete = require_any(P.INSPECTIONS_DELETE)
 
 
-def summary_out(i: Inspection) -> InspectionSummary:
+def _format_inspection_summary(doc: dict, machine_name: str, tech_name: str) -> InspectionSummary:
     return InspectionSummary(
-        id=i.id, machine_id=i.machine_id, machine_name=i.machine.name, performed_by=i.performed_by,
-        performed_by_name=i.technician.full_name, performed_at=i.performed_at, summary=i.summary,
+        id=doc["id"],
+        machine_id=doc["machine_id"],
+        machine_name=machine_name,
+        performed_by=doc["performed_by"],
+        performed_by_name=tech_name,
+        performed_at=doc["performed_at"],
+        summary=doc.get("summary"),
     )
 
 
-def inspection_out(i: Inspection) -> InspectionOut:
+def _format_inspection_out(doc: dict, machine_name: str, tech_name: str) -> InspectionOut:
+    raw_answers = doc.get("answers", [])
     answers = [
         AnswerOut(
-            check_item_id=a.check_item_id, label=a.check_item_label, category=a.category, input_type=a.input_type,
-            options=[AnswerOptionOut(option_id=o.option_id, label=o.option_label, is_checked=o.is_checked) for o in a.options],
+            check_item_id=a.get("check_item_id"),
+            label=a["check_item_label"],
+            category=CheckCategory(a["category"]),
+            input_type=InputType(a["input_type"]),
+            options=[
+                AnswerOptionOut(
+                    option_id=o.get("option_id"),
+                    label=o["option_label"],
+                    is_checked=o.get("is_checked", False),
+                )
+                for o in a.get("options", [])
+            ],
         )
-        for a in i.answers
+        for a in raw_answers
     ]
-    return InspectionOut(**summary_out(i).model_dump(), answers=answers)
+    summary = _format_inspection_summary(doc, machine_name, tech_name)
+    return InspectionOut(**summary.model_dump(), answers=answers)
 
 
 @router.post("", response_model=InspectionOut, status_code=201)
-def submit_inspection(payload: InspectionCreate, db: Session = Depends(get_db), user: User = Depends(can_create)):
-    machine = db.get(Machine, payload.machine_id)
-    if not machine or not machine.is_active:
+async def submit_inspection(
+    payload: InspectionCreate,
+    db: AsyncIOMotorDatabase = Depends(get_mongo_db),
+    user: User = Depends(can_create),
+):
+    machine = await db["machines"].find_one({"id": payload.machine_id})
+    if not machine or not machine.get("is_active", True):
         raise HTTPException(404, "Machine not found or inactive")
 
-    items = db.scalars(
-        select(CheckItem)
-        .where(CheckItem.machine_type_id == machine.machine_type_id, CheckItem.is_active)
-        .order_by(CheckItem.category, CheckItem.sort_order, CheckItem.id)
-    ).all()
+    items = await db["check_items"].find({
+        "machine_type_id": machine["machine_type_id"],
+        "is_active": True,
+    }).sort([("category", 1), ("sort_order", 1), ("id", 1)]).to_list(1000)
+
     if not items:
         raise HTTPException(400, "No checklist has been defined for this machine type yet")
 
@@ -58,76 +76,128 @@ def submit_inspection(payload: InspectionCreate, db: Session = Depends(get_db), 
             raise HTTPException(422, f"Check item {a.check_item_id} was answered more than once")
         given[a.check_item_id] = set(a.selected_option_ids)
 
-    unknown = set(given) - {i.id for i in items}
+    item_ids = {i["id"] for i in items}
+    unknown = set(given) - item_ids
     if unknown:
         raise HTTPException(422, f"Check items {sorted(unknown)} don't belong to this machine's checklist")
 
     errors, answers = [], []
     for item in items:
-        options = [o for o in item.options if o.is_active]
-        selected = given.get(item.id, set())
-        if selected - {o.id for o in options}:
-            errors.append(f"'{item.label}': invalid option selected")
-        if item.input_type == InputType.radio and len(selected) > 1:
-            errors.append(f"'{item.label}': only one option can be chosen")
-        if item.is_required and not selected:
-            errors.append(f"'{item.label}': this check is required")
-        answers.append(
-            InspectionAnswer(
-                check_item_id=item.id, check_item_label=item.label, category=item.category, input_type=item.input_type,
-                options=[
-                    InspectionAnswerOption(option_id=o.id, option_label=o.label, is_checked=o.id in selected)
-                    for o in options
-                ],
-            )
-        )
+        options = [o for o in item.get("options", []) if o.get("is_active", True)]
+        selected = given.get(item["id"], set())
+        valid_opt_ids = {o["id"] for o in options}
+
+        if selected - valid_opt_ids:
+            errors.append(f"'{item['label']}': invalid option selected")
+        if item["input_type"] == InputType.radio.value and len(selected) > 1:
+            errors.append(f"'{item['label']}': only one option can be chosen")
+        if item.get("is_required", False) and not selected:
+            errors.append(f"'{item['label']}': this check is required")
+
+        answers.append({
+            "check_item_id": item["id"],
+            "check_item_label": item["label"],
+            "category": item["category"],
+            "input_type": item["input_type"],
+            "options": [
+                {
+                    "option_id": o["id"],
+                    "option_label": o["label"],
+                    "is_checked": o["id"] in selected,
+                }
+                for o in options
+            ],
+        })
+
     if errors:
         raise HTTPException(422, errors)
 
-    inspection = Inspection(machine_id=machine.id, performed_by=user.id, summary=payload.summary, answers=answers)
-    db.add(inspection)
-    db.flush()
+    new_id = await get_next_id(db, "inspection_id")
+    now = datetime.now(timezone.utc)
+    inspection_doc = {
+        "id": new_id,
+        "machine_id": machine["id"],
+        "performed_by": user.id,
+        "performed_at": now,
+        "summary": payload.summary,
+        "answers": answers,
+    }
+    await db["inspections"].insert_one(inspection_doc)
+
     if payload.note and payload.note.strip():
-        db.add(MachineNote(machine_id=machine.id, inspection_id=inspection.id, author_id=user.id, body=payload.note.strip()))
-    db.commit()
-    db.refresh(inspection)
-    return inspection_out(inspection)
+        note_id = await get_next_id(db, "note_id")
+        await db["notes"].insert_one({
+            "id": note_id,
+            "machine_id": machine["id"],
+            "inspection_id": new_id,
+            "author_id": user.id,
+            "body": payload.note.strip(),
+            "created_at": now,
+            "updated_at": now,
+        })
+
+    return _format_inspection_out(inspection_doc, machine["name"], user.full_name)
 
 
 @router.get("", response_model=list[InspectionSummary], dependencies=[Depends(can_view)])
-def list_inspections(
+async def list_inspections(
     machine_id: Optional[int] = None,
     performed_by: Optional[int] = None,
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_mongo_db),
 ):
-    stmt = select(Inspection).order_by(Inspection.performed_at.desc(), Inspection.id.desc())
+    query = {}
     if machine_id:
-        stmt = stmt.where(Inspection.machine_id == machine_id)
+        query["machine_id"] = machine_id
     if performed_by:
-        stmt = stmt.where(Inspection.performed_by == performed_by)
-    if date_from:
-        stmt = stmt.where(Inspection.performed_at >= date_from)
-    if date_to:
-        stmt = stmt.where(Inspection.performed_at <= date_to)
-    return [summary_out(i) for i in db.scalars(stmt.limit(limit).offset(offset)).unique()]
+        query["performed_by"] = performed_by
+    if date_from or date_to:
+        query["performed_at"] = {}
+        if date_from:
+            query["performed_at"]["$gte"] = date_from
+        if date_to:
+            query["performed_at"]["$lte"] = date_to
+
+    docs = await db["inspections"].find(query).sort([("performed_at", -1), ("id", -1)]).skip(offset).limit(limit).to_list(limit)
+    if not docs:
+        return []
+
+    machine_ids = list({d["machine_id"] for d in docs})
+    user_ids = list({d["performed_by"] for d in docs})
+
+    machines = await db["machines"].find({"id": {"$in": machine_ids}}).to_list(len(machine_ids))
+    users = await db["users"].find({"id": {"$in": user_ids}}).to_list(len(user_ids))
+
+    m_map = {m["id"]: m["name"] for m in machines}
+    u_map = {u["id"]: u["full_name"] for u in users}
+
+    return [
+        _format_inspection_summary(d, m_map.get(d["machine_id"], "Unknown"), u_map.get(d["performed_by"], "Unknown"))
+        for d in docs
+    ]
 
 
 @router.get("/{inspection_id}", response_model=InspectionOut, dependencies=[Depends(can_view)])
-def get_inspection(inspection_id: int, db: Session = Depends(get_db)):
-    i = db.get(Inspection, inspection_id)
+async def get_inspection(inspection_id: int, db: AsyncIOMotorDatabase = Depends(get_mongo_db)):
+    i = await db["inspections"].find_one({"id": inspection_id})
     if not i:
         raise HTTPException(404, "Inspection not found")
-    return inspection_out(i)
+
+    m = await db["machines"].find_one({"id": i["machine_id"]})
+    u = await db["users"].find_one({"id": i["performed_by"]})
+
+    return _format_inspection_out(
+        i,
+        m["name"] if m else "Unknown",
+        u["full_name"] if u else "Unknown",
+    )
 
 
 @router.delete("/{inspection_id}", status_code=204, dependencies=[Depends(can_delete)])
-def delete_inspection(inspection_id: int, db: Session = Depends(get_db)):
-    i = db.get(Inspection, inspection_id)
-    if not i:
+async def delete_inspection(inspection_id: int, db: AsyncIOMotorDatabase = Depends(get_mongo_db)):
+    res = await db["inspections"].delete_one({"id": inspection_id})
+    if res.deleted_count == 0:
         raise HTTPException(404, "Inspection not found")
-    db.delete(i)
-    db.commit()

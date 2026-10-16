@@ -1,19 +1,4 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+"""Database access module migrated to MongoDB Atlas."""
+from .mongo import get_db, get_mongo_client, get_mongo_db
 
-from .config import settings
-
-engine = create_engine(settings.database_url, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+__all__ = ["get_db", "get_mongo_client", "get_mongo_db"]

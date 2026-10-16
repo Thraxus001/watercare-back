@@ -5,7 +5,9 @@
 cp .env.example .env            # set SECRET_KEY, and the first admin's email/password
 docker compose up -d db         # starts Postgres and loads schema.sql automatically
 #   (no Docker? create a DB called "watercare" and run: psql -d watercare -f schema.sql)
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```

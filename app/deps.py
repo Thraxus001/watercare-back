@@ -1,29 +1,42 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from .database import get_db
 from .models import User, UserRole
+from .mongo import get_mongo_client, get_mongo_db
 from .permissions import Permission
 from .security import decode_access_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncIOMotorDatabase = Depends(get_mongo_db),
+) -> User:
     user_id = decode_access_token(token)
-    user = db.get(User, user_id) if user_id else None
-    if not user or not user.is_active:
+    if not user_id:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "Invalid or expired credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return user
+    user_doc = await db["users"].find_one({"id": user_id})
+    if not user_doc or not user_doc.get("is_active", True):
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "Invalid or expired credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return User(**user_doc)
 
 
 def has_permission(user: User, perm: Permission) -> bool:
-    return user.role == UserRole.admin or perm.value in {p.permission for p in user.permissions}
+    if user.role == UserRole.admin:
+        return True
+    user_perms = {p if isinstance(p, str) else getattr(p, "permission", str(p)) for p in user.permissions}
+    return perm.value in user_perms
 
 
 def require_any(*perms: Permission):

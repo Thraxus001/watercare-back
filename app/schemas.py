@@ -27,11 +27,10 @@ class UserOut(BaseModel):
 
 
 def user_out(u: User) -> UserOut:
-    perms = (
-        [p.value for p in Permission]
-        if u.role == UserRole.admin
-        else sorted(p.permission for p in u.permissions)
-    )
+    if u.role == UserRole.admin:
+        perms = [p.value for p in Permission]
+    else:
+        perms = sorted(p if isinstance(p, str) else getattr(p, "permission", str(p)) for p in u.permissions)
     return UserOut(
         id=u.id, email=u.email, full_name=u.full_name, role=u.role, is_active=u.is_active, permissions=perms
     )
@@ -143,8 +142,37 @@ class CheckItemOut(BaseModel):
     options: list[OptionOut]
 
 
+# ───────────── Plants ─────────────
+class PlantCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=150)
+    code: Optional[str] = Field(None, max_length=50)
+    location: str = Field(min_length=1, max_length=255)
+    description: Optional[str] = None
+
+
+class PlantUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=150)
+    code: Optional[str] = Field(None, max_length=50)
+    location: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class PlantOut(BaseModel):
+    id: int
+    name: str
+    code: Optional[str] = None
+    location: str
+    description: Optional[str] = None
+    is_active: bool = True
+    machine_count: int = 0
+    active_machines_count: int = 0
+    last_inspection: Optional["LastInspection"] = None
+
+
 # ───────────── Machines ─────────────
 class MachineCreate(BaseModel):
+    plant_id: Optional[int] = None
     machine_type_id: int
     name: str = Field(min_length=1, max_length=150)
     serial_number: str = Field(min_length=1, max_length=100)
@@ -153,6 +181,7 @@ class MachineCreate(BaseModel):
 
 
 class MachineUpdate(BaseModel):
+    plant_id: Optional[int] = None
     machine_type_id: Optional[int] = None
     name: Optional[str] = Field(None, min_length=1, max_length=150)
     serial_number: Optional[str] = Field(None, min_length=1, max_length=100)
@@ -169,6 +198,9 @@ class LastInspection(BaseModel):
 
 class MachineOut(BaseModel):
     id: int
+    plant_id: Optional[int] = None
+    plant_name: Optional[str] = None
+    plant_location: Optional[str] = None
     name: str
     serial_number: str
     location: Optional[str]
