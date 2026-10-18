@@ -12,12 +12,12 @@ class Settings(BaseSettings):
     mongodb_db_name: str = "watercare"
 
     # ── JWT security ──────────────────────────────────────────────────────────
-    secret_key: str = "change-me-in-production"
+    secret_key: str = "Com03/008/23@42462419"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 480
 
     # ── CORS ──────────────────────────────────────────────────────────────────
-    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000", "https://allianzplantcare.netlify.app"]
 
     # ── First-run admin seed ───────────────────────────────────────────────────
     first_admin_email: str = "admin@watercare.local"
