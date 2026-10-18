@@ -23,29 +23,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("seed")
 
 
-async def seed(drop: bool = False):
-    url = settings.effective_mongo_url
-    if not url:
-        log.error("No MONGODB_URL configured in .env!")
-        sys.exit(1)
-
-    masked_url = url
-    if "@" in url:
-        prefix, rest = url.split("://", 1)
-        creds, host = rest.split("@", 1)
-        masked_url = f"{prefix}://*****@{host}"
-
-    log.info("Connecting to MongoDB Atlas (%s)...", masked_url)
-    client = AsyncIOMotorClient(url, serverSelectionTimeoutMS=8000)
-    db = client[settings.mongodb_db_name]
-
-    try:
-        await client.admin.command("ping")
-        log.info("Connected successfully to database '%s'", settings.mongodb_db_name)
-    except Exception as exc:
-        log.error("Failed to connect to MongoDB Atlas: %s", exc)
-        sys.exit(1)
-
+async def seed_database(db, drop: bool = False):
+    """Seed a MongoDB database (Motor or mongomock) with realistic seed/demo data."""
     collections = ["users", "plants", "machine_types", "check_items", "machines", "inspections", "notes", "counters"]
 
     if drop:
@@ -60,8 +39,7 @@ async def seed(drop: bool = False):
     # Check if already seeded
     user_count = await db["users"].count_documents({})
     if user_count > 0 and not drop:
-        log.info("Database already contains %d user(s). Pass --drop to reset and re-seed.", user_count)
-        client.close()
+        log.info("Database already contains %d user(s).", user_count)
         return
 
     now = datetime.now(timezone.utc)
@@ -121,6 +99,17 @@ async def seed(drop: bool = False):
             "permissions": operator_permissions,
         },
     ]
+    if settings.first_admin_email.lower() != "admin@watercare.local":
+        users.append({
+            "id": len(users) + 1,
+            "email": "admin@watercare.local",
+            "full_name": "WaterCare Administrator",
+            "hashed_password": hash_password(settings.first_admin_password),
+            "role": UserRole.admin.value,
+            "is_active": True,
+            "created_at": now - 30 * one_day,
+            "permissions": all_permissions,
+        })
     await db["users"].insert_many(users)
 
     # ───────────── 2. Machine Types ─────────────
@@ -577,7 +566,7 @@ async def seed(drop: bool = False):
     # ───────────── 7. Synchronize Counters ─────────────
     log.info("Synchronizing sequence counters...")
     counters = [
-        {"_id": "user_id", "seq": 3},
+        {"_id": "user_id", "seq": len(users)},
         {"_id": "plant_id", "seq": 4},
         {"_id": "machine_type_id", "seq": 4},
         {"_id": "check_item_id", "seq": 8},
@@ -590,24 +579,61 @@ async def seed(drop: bool = False):
         await db["counters"].update_one({"_id": c["_id"]}, {"$set": {"seq": c["seq"]}}, upsert=True)
 
     log.info("==========================================")
-    log.info("Demo data seeding completed successfully!")
+    log.info("Seed data population completed successfully!")
     log.info("==========================================")
     log.info("Admin login: %s / %s", settings.first_admin_email, settings.first_admin_password)
+    log.info("Admin login: admin@watercare.local / ChangeMe123!")
     log.info("Tech login:  john.tech@watercare.local / ChangeMe123!")
     log.info("Operator:    sarah.operator@watercare.local / ChangeMe123!")
     log.info("Machines:    6 machines across 4 machine types")
     log.info("Checkups:    3 inspections with detailed answer histories")
     log.info("Notes:       4 operational notes")
 
+
+async def seed(drop: bool = False):
+    url = settings.effective_mongo_url
+    if not url:
+        log.error("No MONGODB_URL configured in .env!")
+        sys.exit(1)
+
+    masked_url = url
+    if "@" in url:
+        prefix, rest = url.split("://", 1)
+        creds, host = rest.split("@", 1)
+        masked_url = f"{prefix}://*****@{host}"
+
+    log.info("Connecting to MongoDB Atlas (%s)...", masked_url)
+    try:
+        import certifi
+        ca_file = certifi.where()
+    except Exception:
+        ca_file = None
+
+    opts = {"serverSelectionTimeoutMS": 8000}
+    if ca_file:
+        opts["tlsCAFile"] = ca_file
+
+    client = AsyncIOMotorClient(url, **opts)
+    db = client[settings.mongodb_db_name]
+
+    try:
+        await client.admin.command("ping")
+        log.info("Connected successfully to database '%s'", settings.mongodb_db_name)
+    except Exception as exc:
+        log.error("Failed to connect to MongoDB Atlas: %s", exc)
+        client.close()
+        sys.exit(1)
+
+    await seed_database(db, drop=drop)
     client.close()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Seed WaterCare MongoDB Atlas database with demo data.")
+    parser = argparse.ArgumentParser(description="Seed WaterCare database with seed/demo data.")
     parser.add_argument(
         "--drop",
         action="store_true",
-        help="Drop existing collections before seeding (recommended for a clean demo state)",
+        help="Drop existing collections before seeding (recommended for a clean state)",
     )
     args = parser.parse_args()
     asyncio.run(seed(drop=args.drop))

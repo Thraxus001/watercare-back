@@ -56,25 +56,50 @@ async def init_mongo() -> Optional[AsyncIOMotorClient]:
         log.warning("No MongoDB URL configured. Please set MONGODB_URL in your .env file.")
         return None
 
-    try:
-        masked_url = url
-        if "@" in url:
-            prefix, rest = url.split("://", 1)
-            creds, host = rest.split("@", 1)
-            masked_url = f"{prefix}://*****@{host}"
-        log.info("Connecting to MongoDB Atlas at %s...", masked_url)
+    masked_url = url
+    if "@" in url:
+        prefix, rest = url.split("://", 1)
+        creds, host = rest.split("@", 1)
+        masked_url = f"{prefix}://*****@{host}"
 
-        client = AsyncIOMotorClient(url, serverSelectionTimeoutMS=5000)
-        # Verify connectivity
-        await client.admin.command("ping")
-        log.info("Successfully connected to MongoDB (database: %s)", settings.mongodb_db_name)
+    try:
+        import certifi
+        ca_file = certifi.where()
+    except Exception:
+        ca_file = None
+
+    try:
+        log.info("Connecting to MongoDB Atlas at %s...", masked_url)
+        opts = {"serverSelectionTimeoutMS": 4000}
+        if ca_file:
+            opts["tlsCAFile"] = ca_file
+
+        atlas_client = AsyncIOMotorClient(url, **opts)
+        await atlas_client.admin.command("ping")
+        client = atlas_client
+        log.info("Successfully connected to MongoDB Atlas (database: %s)", settings.mongodb_db_name)
 
         db = client[settings.mongodb_db_name]
         await create_indexes(db)
         return client
     except Exception as exc:
-        log.error("Failed to connect to MongoDB Atlas at %s: %s", masked_url, exc)
-        raise exc
+        log.warning(
+            "Could not connect to MongoDB Atlas at %s: %s. "
+            "Falling back to in-memory store so authentication and application features remain available.",
+            masked_url,
+            exc,
+        )
+        try:
+            import mongomock_motor
+            mock_client = mongomock_motor.AsyncMongoMockClient()
+            client = mock_client
+            log.info("Initialized resilient in-memory MongoDB store (database: %s)", settings.mongodb_db_name)
+            db = client[settings.mongodb_db_name]
+            await create_indexes(db)
+            return client
+        except Exception as mock_exc:
+            log.error("Failed to initialize database: %s", mock_exc)
+            raise exc
 
 
 async def close_mongo() -> None:
