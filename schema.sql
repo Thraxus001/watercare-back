@@ -24,7 +24,19 @@ CREATE TABLE user_permissions (
     PRIMARY KEY (user_id, permission)
 );
 
--- ───────────── Machines & checklist definition ─────────────
+-- ───────────── Plants, Machines & checklist definition ─────────────
+CREATE TABLE plants (
+    id           SERIAL PRIMARY KEY,
+    name         VARCHAR(150) NOT NULL,
+    code         VARCHAR(50),
+    location     VARCHAR(255) NOT NULL,
+    latitude     DOUBLE PRECISION,
+    longitude    DOUBLE PRECISION,
+    description  TEXT,
+    is_active    BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
 CREATE TABLE machine_types (
     id           SERIAL PRIMARY KEY,
     name         VARCHAR(150) NOT NULL UNIQUE,
@@ -33,10 +45,13 @@ CREATE TABLE machine_types (
 
 CREATE TABLE machines (
     id               SERIAL PRIMARY KEY,
+    plant_id         INTEGER      REFERENCES plants(id) ON DELETE SET NULL,
     machine_type_id  INTEGER      NOT NULL REFERENCES machine_types(id),
     name             VARCHAR(150) NOT NULL,
     serial_number    VARCHAR(100) NOT NULL UNIQUE,
     location         VARCHAR(255),
+    latitude         DOUBLE PRECISION,
+    longitude        DOUBLE PRECISION,
     installed_on     DATE,
     is_active        BOOLEAN      NOT NULL DEFAULT TRUE,
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT now()
@@ -76,7 +91,10 @@ CREATE TABLE inspections (
     machine_id    INTEGER     NOT NULL REFERENCES machines(id),
     performed_by  INTEGER     NOT NULL REFERENCES users(id),
     performed_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    summary       TEXT
+    summary       TEXT,
+    latitude      DOUBLE PRECISION,
+    longitude     DOUBLE PRECISION,
+    location_accuracy REAL
 );
 CREATE INDEX ix_inspections_machine_date ON inspections(machine_id, performed_at DESC);
 CREATE INDEX ix_inspections_user ON inspections(performed_by);

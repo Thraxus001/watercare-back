@@ -5,6 +5,8 @@
 cp .env.example .env            # set SECRET_KEY, and the first admin's email/password
 docker compose up -d db         # starts Postgres and loads schema.sql automatically
 #   (no Docker? create a DB called "watercare" and run: psql -d watercare -f schema.sql)
+# Existing PostgreSQL databases can apply GPS fields with: psql -d watercare -f alter.sql
+# MongoDB deployments need no schema migration; the documents are schemaless.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
@@ -19,7 +21,9 @@ Interactive API docs: http://localhost:8000/docs  (click "Authorize" and log in 
 * **Checklists** – admin creates a *machine type* (e.g. "RO Plant") and defines its **check items**:
   category (`operation` / `maintenance`), input type (`radio` = pick one, `checkbox` = tick any), options, required or not.
   A plain done / not-done check = a checkbox with one option ("Done"). Machines inherit the checklist of their type.
-* **Checkups** – `POST /inspections` with the answers. The server stores *every* option with `is_checked`,
+* **Checkups** – `POST /inspections` with the answers. If a machine has registered coordinates, the server requires
+  the submitted GPS fix to be within 10 metres. GPS coordinates and accuracy are retained with the inspection.
+  The server stores *every* option with `is_checked`,
   so you can later see what was done **and** what wasn't. Labels are snapshotted, so editing the checklist
   later never changes past checkups. Archived checks/options (DELETE) just disappear from new checkups.
 * **Shared visibility** – `GET /machines` shows each machine's `last_inspection` (when + who); other users

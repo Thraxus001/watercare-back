@@ -148,6 +148,14 @@ class PlantCreate(BaseModel):
     code: Optional[str] = Field(None, max_length=50)
     location: str = Field(min_length=1, max_length=255)
     description: Optional[str] = None
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
+
+    @model_validator(mode="after")
+    def check_coordinates(self):
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Latitude and longitude must be provided together")
+        return self
 
 
 class PlantUpdate(BaseModel):
@@ -155,6 +163,8 @@ class PlantUpdate(BaseModel):
     code: Optional[str] = Field(None, max_length=50)
     location: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
     is_active: Optional[bool] = None
 
 
@@ -163,6 +173,8 @@ class PlantOut(BaseModel):
     name: str
     code: Optional[str] = None
     location: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     description: Optional[str] = None
     is_active: bool = True
     machine_count: int = 0
@@ -177,7 +189,15 @@ class MachineCreate(BaseModel):
     name: str = Field(min_length=1, max_length=150)
     serial_number: str = Field(min_length=1, max_length=100)
     location: Optional[str] = None
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
     installed_on: Optional[date] = None
+
+    @model_validator(mode="after")
+    def check_coordinates(self):
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Latitude and longitude must be provided together")
+        return self
 
 
 class MachineUpdate(BaseModel):
@@ -186,6 +206,8 @@ class MachineUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=150)
     serial_number: Optional[str] = Field(None, min_length=1, max_length=100)
     location: Optional[str] = None
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
     installed_on: Optional[date] = None
     is_active: Optional[bool] = None
 
@@ -204,6 +226,8 @@ class MachineOut(BaseModel):
     name: str
     serial_number: str
     location: Optional[str]
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     installed_on: Optional[date]
     is_active: bool
     machine_type_id: int
@@ -221,6 +245,9 @@ class InspectionCreate(BaseModel):
     machine_id: int
     summary: Optional[str] = None
     note: Optional[str] = Field(None, description="Optional note saved on the machine and linked to this checkup")
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
+    location_accuracy: Optional[float] = Field(None, ge=0)
     answers: list[AnswerIn]
 
 
@@ -246,6 +273,9 @@ class InspectionSummary(BaseModel):
     performed_by_name: str
     performed_at: datetime
     summary: Optional[str]
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    location_accuracy: Optional[float] = None
 
 
 class InspectionOut(InspectionSummary):

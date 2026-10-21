@@ -65,6 +65,8 @@ def _format_machine_out(
         name=m["name"],
         serial_number=m["serial_number"],
         location=m.get("location"),
+        latitude=m.get("latitude"),
+        longitude=m.get("longitude"),
         installed_on=m.get("installed_on"),
         is_active=m.get("is_active", True),
         machine_type_id=m["machine_type_id"],
@@ -153,6 +155,8 @@ async def create_machine(payload: MachineCreate, db: AsyncIOMotorDatabase = Depe
         "name": payload.name.strip(),
         "serial_number": serial,
         "location": payload.location or (plant.get("location") if plant else None),
+        "latitude": payload.latitude,
+        "longitude": payload.longitude,
         "installed_on": payload.installed_on.isoformat() if payload.installed_on else None,
         "is_active": True,
         "created_at": datetime.now(timezone.utc),
@@ -172,6 +176,11 @@ async def update_machine(
         raise HTTPException(404, "Machine not found")
 
     data = payload.model_dump(exclude_unset=True)
+    latitude = data.get("latitude", m.get("latitude"))
+    longitude = data.get("longitude", m.get("longitude"))
+    if (latitude is None) != (longitude is None):
+        raise HTTPException(422, "Latitude and longitude must be provided together")
+
     if "machine_type_id" in data:
         if not await db["machine_types"].find_one({"id": data["machine_type_id"]}):
             raise HTTPException(422, "Unknown machine type")

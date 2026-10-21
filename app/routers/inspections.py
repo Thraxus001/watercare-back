@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from math import asin, cos, radians, sin, sqrt
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,6 +17,16 @@ can_view = require_any(P.INSPECTIONS_VIEW)
 can_create = require_any(P.INSPECTIONS_CREATE)
 can_delete = require_any(P.INSPECTIONS_DELETE)
 
+EARTH_RADIUS_METRES = 6_371_000
+
+
+def haversine_metres(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    phi1, phi2 = radians(lat1), radians(lat2)
+    delta_phi = radians(lat2 - lat1)
+    delta_lambda = radians(lon2 - lon1)
+    a = min(1, sin(delta_phi / 2) ** 2 + cos(phi1) * cos(phi2) * sin(delta_lambda / 2) ** 2)
+    return 2 * EARTH_RADIUS_METRES * asin(sqrt(a))
+
 
 def _format_inspection_summary(doc: dict, machine_name: str, tech_name: str) -> InspectionSummary:
     return InspectionSummary(
@@ -26,6 +37,9 @@ def _format_inspection_summary(doc: dict, machine_name: str, tech_name: str) -> 
         performed_by_name=tech_name,
         performed_at=doc["performed_at"],
         summary=doc.get("summary"),
+        latitude=doc.get("latitude"),
+        longitude=doc.get("longitude"),
+        location_accuracy=doc.get("location_accuracy"),
     )
 
 
@@ -61,6 +75,33 @@ async def submit_inspection(
     machine = await db["machines"].find_one({"id": payload.machine_id})
     if not machine or not machine.get("is_active", True):
         raise HTTPException(404, "Machine not found or inactive")
+
+    if payload.latitude is None or payload.longitude is None:
+        raise HTTPException(400, "Your device GPS location is required to submit this inspection")
+
+    # Determine registered location: machine coordinates take precedence, then plant coordinates
+    target_latitude = machine.get("latitude")
+    target_longitude = machine.get("longitude")
+    target_label = f"machine '{machine.get('name')}'"
+
+    if (target_latitude is None or target_longitude is None) and machine.get("plant_id"):
+        plant = await db["plants"].find_one({"id": machine["plant_id"]})
+        if plant and plant.get("latitude") is not None and plant.get("longitude") is not None:
+            target_latitude = plant.get("latitude")
+            target_longitude = plant.get("longitude")
+            target_label = f"plant '{plant.get('name')}'"
+
+    if target_latitude is not None or target_longitude is not None:
+        if target_latitude is None or target_longitude is None:
+            raise HTTPException(400, "The registered location coordinates are incomplete")
+        distance = haversine_metres(
+            target_latitude, target_longitude, payload.latitude, payload.longitude
+        )
+        if distance > 10.0:
+            raise HTTPException(
+                403,
+                f"Location check failed: You are {distance:.1f} metres away from {target_label}. You must be within 10 metres to submit."
+            )
 
     items = await db["check_items"].find({
         "machine_type_id": machine["machine_type_id"],
@@ -120,6 +161,9 @@ async def submit_inspection(
         "performed_by": user.id,
         "performed_at": now,
         "summary": payload.summary,
+        "latitude": payload.latitude,
+        "longitude": payload.longitude,
+        "location_accuracy": payload.location_accuracy,
         "answers": answers,
     }
     await db["inspections"].insert_one(inspection_doc)

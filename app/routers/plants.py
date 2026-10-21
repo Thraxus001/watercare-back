@@ -38,6 +38,8 @@ async def _format_plant_out(p: dict, db: AsyncIOMotorDatabase) -> PlantOut:
         name=p["name"],
         code=p.get("code"),
         location=p["location"],
+        latitude=p.get("latitude"),
+        longitude=p.get("longitude"),
         description=p.get("description"),
         is_active=p.get("is_active", True),
         machine_count=total_count,
@@ -125,6 +127,8 @@ async def create_plant(payload: PlantCreate, db: AsyncIOMotorDatabase = Depends(
         "name": name,
         "code": code,
         "location": loc,
+        "latitude": payload.latitude,
+        "longitude": payload.longitude,
         "description": payload.description.strip() if payload.description else None,
         "is_active": True,
         "created_at": datetime.now(timezone.utc),
@@ -144,6 +148,11 @@ async def update_plant(
         raise HTTPException(404, "Plant not found")
 
     data = payload.model_dump(exclude_unset=True)
+    latitude = data.get("latitude", p.get("latitude"))
+    longitude = data.get("longitude", p.get("longitude"))
+    if (latitude is None) != (longitude is None):
+        raise HTTPException(422, "Latitude and longitude must be provided together")
+
     if "name" in data and data["name"] is not None:
         data["name"] = data["name"].strip()
     if "location" in data and data["location"] is not None:
